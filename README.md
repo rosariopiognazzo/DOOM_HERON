@@ -22,4 +22,4 @@ The configurations tested to train the NPC are located in the `HeRoN` folder. On
 To test the trained NPC, use the `testing_model.py` file, enter the model name (i.e. ‘npc_model’) in the DQNAgent string, change the names of the graphs in the `plot_training` function, and start testing.
 
 ### Citation
-If you find our work helpful, we would appreciate if you cite it:
+If you find our work helpful, we would appreciate if you cite it
