@@ -349,6 +349,37 @@ def generate_corrective_feedback(game_state, helper_response, parsed_actions,
     return " ".join(feedback_parts)
 
 
+def get_action_score(game_state_desc, action_name, scenario='deadly_corridor'):
+    """
+    Calcola lo score di una singola azione basandosi sulla descrizione dello stato.
+    Wrapper per calculate_action_scores che estrae health/ammo dal game_state.
+    
+    Args:
+        game_state_desc: Descrizione testuale dello stato di gioco
+        action_name: Nome dell'azione da valutare
+        scenario: Nome dello scenario
+        
+    Returns:
+        Score normalizzato [0,1] per l'azione
+    """
+    import re
+    
+    # Estrai health dalla descrizione
+    health_match = re.search(r'health[:\s]+(\d+)', game_state_desc, re.IGNORECASE)
+    health = int(health_match.group(1)) if health_match else 50
+    
+    # Estrai ammo dalla descrizione
+    ammo_match = re.search(r'ammo[:\s]+(\d+)', game_state_desc, re.IGNORECASE)
+    ammo = int(ammo_match.group(1)) if ammo_match else 10
+    
+    # Calcola score per tutte le azioni
+    scores = calculate_action_scores(health, ammo, scenario)
+    
+    # Restituisci score per l'azione specifica
+    action_upper = action_name.upper().strip()
+    return scores.get(action_upper, 0.0)
+
+
 # ================== TEST ==================
 
 if __name__ == "__main__":

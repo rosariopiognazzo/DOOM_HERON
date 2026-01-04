@@ -9,7 +9,8 @@ from .vizdoom_action_score import (
     calculate_action_scores,
     evaluate_action_plan,
     generate_corrective_feedback,
-    get_best_action
+    get_best_action,
+    get_action_score
 )
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     'calculate_action_scores',
     'evaluate_action_plan',
     'generate_corrective_feedback',
-    'get_best_action'
+    'get_best_action',
+    'get_action_score'
 ]

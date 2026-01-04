@@ -187,6 +187,9 @@ class DQNCnnAgent:
         # Contatore per target network update
         self.steps_done = 0
         
+        # Traccia ultima loss per statistiche
+        self.last_loss = 0.0
+        
         # Carica modello se specificato
         if load_model_path:
             self.load(load_model_path)
@@ -293,6 +296,7 @@ class DQNCnnAgent:
                                        batch_size=batch_size, 
                                        epochs=1, verbose=0)
         loss = history.history['loss'][0]
+        self.last_loss = loss  # Salva per statistiche
         
         # Aggiorna target network
         self.steps_done += 1

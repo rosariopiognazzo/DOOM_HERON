@@ -6,6 +6,7 @@ Questo script:
 1. Esegue episodi di VizDoom con l'agente DQN + suggerimenti Helper
 2. Logga tutte le risposte dell'Helper con lo stato di gioco
 3. Salva i dati in formato CSV per il fine-tuning del Reviewer
+4. Genera statistiche e grafici per il report
 """
 
 import numpy as np
@@ -19,12 +20,14 @@ import lmstudio as lms
 
 from vizdoom_env import VizDoomEnv, create_vizdoom_env
 from vizdoom_agent import DQNCnnAgent
+from training_stats import TrainingStats, TrainingVisualizer
+from vizdoom_action_score import get_action_score
 
 
 # ================== CONFIGURAZIONE ==================
 
 # Host LM Studio per l'Helper
-SERVER_API_HOST = "http://127.0.0.1:1234"
+SERVER_API_HOST = "http://192.168.178.150:1234"
 
 # Modello Helper (modificare con il modello scelto)
 HELPER_MODEL_NAME = "qwen2.5-7b-instruct"  # Oppure: "llama-3.1-8b-instruct", "mistral-7b-instruct-v0.3"
@@ -240,7 +243,7 @@ class HelperDataCollector:
 # ================== TRAINING LOOP ==================
 
 def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO, 
-                        visible=False, config_path=None):
+                        visible=False, config_path=None, generate_plots=True):
     """
     Loop principale per raccogliere dati dall'Helper.
     
@@ -249,6 +252,7 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
         scenario: Scenario VizDoom da usare
         visible: Se mostrare la finestra di gioco
         config_path: Path ai file di configurazione VizDoom
+        generate_plots: Se generare grafici delle statistiche
         
     Returns:
         Path del file CSV con i dati raccolti
@@ -260,6 +264,10 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
     # Setup
     setup_lmstudio()
     collector = HelperDataCollector(scenario)
+    
+    # Inizializza modulo statistiche
+    stats_output_dir = os.path.join(OUTPUT_DIR, f"stats_{scenario}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    training_stats = TrainingStats(scenario=scenario, output_dir=stats_output_dir)
     
     # Crea environment
     print("Initializing VizDoom environment...")
@@ -286,7 +294,8 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
     print(f"\nStarting data collection for {episodes} episodes...")
     print(f"Helper model: {HELPER_MODEL_NAME}")
     print(f"Helper call frequency: every {HELPER_CALL_FREQUENCY} steps")
-    print(f"Plan size: {PLAN_SIZE} actions\n")
+    print(f"Plan size: {PLAN_SIZE} actions")
+    print(f"Statistics output: {stats_output_dir}\n")
     
     try:
         with lms.Client() as client:
@@ -296,6 +305,8 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                 episode_reward = 0
                 step = 0
                 helper_calls_this_episode = 0
+                episode_actions = []  # Traccia azioni per statistiche
+                helper_used_this_episode = False
                 
                 # Coda per le azioni suggerite dall'Helper
                 action_queue = deque()
@@ -319,6 +330,7 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                         
                         helper_calls += 1
                         helper_calls_this_episode += 1
+                        helper_used_this_episode = True
                         
                         # Parsa azioni
                         parsed_actions = parse_action_plan(
@@ -329,6 +341,24 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                         # Verifica validità
                         valid_actions = env.get_valid_actions()
                         was_valid = len(parsed_actions) > 0
+                        
+                        # Calcola action score per ogni azione suggerita
+                        action_scores = []
+                        for action_name in parsed_actions:
+                            score = get_action_score(game_state_desc, action_name, scenario)
+                            action_scores.append(score)
+                        
+                        # Registra nelle statistiche
+                        avg_action_score = np.mean(action_scores) if action_scores else 0.0
+                        training_stats.record_action_score(avg_action_score)
+                        training_stats.record_helper_response(
+                            was_valid=was_valid,
+                            response_time=response_time
+                        )
+                        
+                        # Check per allucinazione (azioni non valide)
+                        if not was_valid or len(parsed_actions) < PLAN_SIZE:
+                            training_stats.record_hallucination()
                         
                         if was_valid:
                             valid_responses += 1
@@ -358,11 +388,17 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                     # Seleziona azione
                     if len(action_queue) > 0:
                         action_name, action = action_queue.popleft()
+                        action_source = "helper"
                     else:
                         # Usa policy DQN
                         valid_actions = env.get_valid_actions()
                         action = agent.act(state, valid_actions)
                         action_name = env.action_names[action] if action < len(env.action_names) else "UNKNOWN"
+                        action_source = "dqn"
+                    
+                    # Traccia azione per statistiche
+                    episode_actions.append(action_name)
+                    training_stats.record_action(action_name)
                     
                     # Esegui azione
                     next_state, reward, done, info = env.step(action)
@@ -383,9 +419,21 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                 total_rewards.append(episode_reward)
                 episode_lengths.append(step)
                 
+                # Registra statistiche episodio
+                victory = info.get('victory', False)
+                training_stats.record_episode(
+                    episode=episode,
+                    reward=episode_reward,
+                    length=step,
+                    epsilon=agent.epsilon,
+                    win=victory,
+                    helper_used=helper_used_this_episode,
+                    loss=agent.last_loss if hasattr(agent, 'last_loss') else None
+                )
+                
                 # Aggiorna ultimo log con outcome
                 if collector.data:
-                    collector.data[-1]['episode_outcome'] = 'victory' if info.get('victory', False) else 'defeat'
+                    collector.data[-1]['episode_outcome'] = 'victory' if victory else 'defeat'
                 
                 # Progress
                 if (episode + 1) % 10 == 0:
@@ -411,15 +459,34 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
     output_path = collector.save()
     stats = collector.get_stats()
     
-    print(f"\nStatistics:")
+    print(f"\nHelper Data Statistics:")
     for key, value in stats.items():
         print(f"  {key}: {value}")
+    
+    # Genera statistiche e grafici
+    if generate_plots:
+        print(f"\n{'='*60}")
+        print("Generating Training Statistics and Plots")
+        print(f"{'='*60}")
+        
+        # Salva statistiche
+        training_stats.save_stats()
+        
+        # Genera grafici
+        visualizer = TrainingVisualizer(training_stats)
+        visualizer.generate_all_plots()
+        
+        # Genera report Markdown
+        report_path = training_stats.generate_markdown_report()
+        
+        print(f"\nStatistics and plots saved to: {stats_output_dir}")
+        print(f"Report: {report_path}")
     
     # Salva anche il modello DQN (opzionale)
     model_path = os.path.join(OUTPUT_DIR, f"dqn_model_{scenario}")
     agent.save(model_path)
     
-    return output_path
+    return output_path, stats_output_dir if generate_plots else output_path
 
 
 # ================== MAIN ==================
@@ -439,6 +506,8 @@ if __name__ == "__main__":
                         help='Path to VizDoom config files')
     parser.add_argument('--helper-model', type=str, default='qwen2.5-7b-instruct',
                         help='Helper model name in LM Studio')
+    parser.add_argument('--no-plots', action='store_true',
+                        help='Disable plot generation')
     
     args = parser.parse_args()
     
@@ -446,13 +515,19 @@ if __name__ == "__main__":
     HELPER_MODEL_NAME = args.helper_model
     
     # Esegui raccolta dati
-    output_file = collect_helper_data(
+    result = collect_helper_data(
         episodes=args.episodes,
         scenario=args.scenario,
         visible=args.visible,
-        config_path=args.config_path
+        config_path=args.config_path,
+        generate_plots=not args.no_plots
     )
     
-    if output_file:
-        print(f"\nData saved to: {output_file}")
+    if result:
+        if isinstance(result, tuple):
+            output_file, stats_dir = result
+            print(f"\nData saved to: {output_file}")
+            print(f"Statistics saved to: {stats_dir}")
+        else:
+            print(f"\nData saved to: {result}")
         print("Use this file for Reviewer fine-tuning.")
