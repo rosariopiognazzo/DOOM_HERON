@@ -1,0 +1,29 @@
+# Requirements per VizDoom HeRoN
+# ==============================
+
+# VizDoom e dipendenze
+vizdoom>=1.1.14
+
+# Deep Learning - TensorFlow/Keras
+tensorflow>=2.13.0
+# tensorflow-gpu>=2.13.0  # Decommentare se si usa GPU NVIDIA
+
+# Elaborazione immagini
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# LLM
+lmstudio>=0.1.0  # Client per LM Studio
+
+# Transformers per Reviewer
+transformers>=4.30.0
+peft>=0.4.0  # Per LoRA fine-tuning
+datasets>=2.14.0
+
+# Utilities
+pandas>=2.0.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+
+# TensorBoard logging (incluso in TensorFlow)
+# tensorboard>=2.13.0
