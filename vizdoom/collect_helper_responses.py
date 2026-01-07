@@ -280,7 +280,8 @@ class HelperDataCollector:
 # ================== TRAINING LOOP ==================
 
 def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO, 
-                        visible=False, config_path=None, generate_plots=True):
+                        visible=False, config_path=None, generate_plots=False, plan_size=PLAN_SIZE,
+                        helper_frequency=HELPER_CALL_FREQUENCY):
     """
     Loop principale per raccogliere dati dall'Helper.
     
@@ -290,6 +291,7 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
         visible: Se mostrare la finestra di gioco
         config_path: Path ai file di configurazione VizDoom
         generate_plots: Se generare grafici delle statistiche
+        plan_size: Numero di azioni richieste all'Helper
         
     Returns:
         Path del file CSV con i dati raccolti
@@ -330,8 +332,8 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
     
     print(f"\nStarting data collection for {episodes} episodes...")
     print(f"Helper model: {HELPER_MODEL_NAME}")
-    print(f"Helper call frequency: every {HELPER_CALL_FREQUENCY} steps")
-    print(f"Plan size: {PLAN_SIZE} actions")
+    print(f"Helper call frequency: every {helper_frequency} steps")
+    print(f"Plan size: {plan_size} actions")
     print(f"Statistics output: {stats_output_dir}\n")
     
     try:
@@ -354,7 +356,7 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                 # Decidi se chiamare l'Helper
                 should_call_helper = (
                     len(action_queue) == 0 and 
-                    step % HELPER_CALL_FREQUENCY == 0 and
+                    step % helper_frequency == 0 and
                     helper_calls_this_episode < HELPER_CALLS_PER_EPISODE
                 )
                 
@@ -364,7 +366,7 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
                     
                     # Chiama Helper
                     helper_response, response_time = call_helper(
-                        client, game_state_desc, PLAN_SIZE
+                        client, game_state_desc, plan_size
                     )
                     
                     helper_calls += 1
@@ -512,8 +514,8 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
         training_stats.save_stats()
         
         # Genera grafici
-        visualizer = TrainingVisualizer(training_stats)
-        visualizer.generate_all_plots()
+        #visualizer = TrainingVisualizer(training_stats)
+        #visualizer.generate_all_plots()
         
         # Genera report Markdown
         report_path = training_stats.generate_markdown_report()
@@ -545,6 +547,10 @@ if __name__ == "__main__":
                         help='Path to VizDoom config files')
     parser.add_argument('--helper-model', type=str, default='qwen2.5-7b-instruct',
                         help='Helper model name in LM Studio')
+    parser.add_argument('--plan-size', type=int, default=5,
+                        help='Number of actions requested from Helper (default: 5)')
+    parser.add_argument('--helper-frequency', type=int, default=HELPER_CALL_FREQUENCY,
+                        help='Call Helper every N steps (default: 10)')
     parser.add_argument('--no-plots', action='store_true',
                         help='Disable plot generation')
     
@@ -559,7 +565,9 @@ if __name__ == "__main__":
         scenario=args.scenario,
         visible=args.visible,
         config_path=args.config_path,
-        generate_plots=not args.no_plots
+        generate_plots=not args.no_plots,
+        plan_size=args.plan_size,
+        helper_frequency=args.helper_frequency
     )
     
     if result:

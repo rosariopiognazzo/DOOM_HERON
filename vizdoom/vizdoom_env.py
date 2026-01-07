@@ -70,11 +70,11 @@ class VizDoomEnv:
             self.game.set_doom_scenario_path(f"doom_files/{self.scenario['wad']}")
         
         # Configura il rendering
-        self.game.set_window_visible(False)
-        self.game.set_mode(Mode.ASYNC_PLAYER)
+        self.game.set_window_visible(visible)
+        self.game.set_mode(Mode.PLAYER)  # PLAYER mode per test e training
         self.game.set_screen_format(ScreenFormat.RGB24)
         self.game.set_screen_resolution(ScreenResolution.RES_640X480)
-        self.sleep_time = 0.028
+        self.sleep_time = 0.028 if not visible else 0.001
 
         # Definisci le azioni disponibili (one-hot encoding)
         self.action_names = self.scenario['actions']

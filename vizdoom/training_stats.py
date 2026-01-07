@@ -597,7 +597,7 @@ class TrainingVisualizer:
             training_stats: Istanza di TrainingStats
         """
         self.stats = training_stats
-    '''
+
     def generate_all_plots(self, show=False):
         """Genera tutti i grafici disponibili."""
         self.stats.generate_all_plots(show=show)
@@ -625,7 +625,6 @@ class TrainingVisualizer:
     def plot_learning_curve(self, show=False):
         """Grafico della learning curve."""
         self.stats.plot_learning_curve(save=True, show=show)
-    '''
 
 
 # Test
