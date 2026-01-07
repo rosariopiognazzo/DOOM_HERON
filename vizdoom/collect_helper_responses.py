@@ -14,9 +14,11 @@ import pandas as pd
 import re
 import os
 import time
+import requests
+import json
 from datetime import datetime
 from collections import deque
-import lmstudio as lms
+# import lmstudio as lms  <-- Rimosso
 
 from vizdoom_env import VizDoomEnv, create_vizdoom_env
 from vizdoom_agent import DQNCnnAgent
@@ -27,10 +29,11 @@ from vizdoom_action_score import get_action_score
 # ================== CONFIGURAZIONE ==================
 
 # Host LM Studio per l'Helper
-SERVER_API_HOST = "http://192.168.178.150:1234"
+SERVER_API_HOST = "http://localhost:1234/v1/chat/completions"
 
 # Modello Helper (modificare con il modello scelto)
-HELPER_MODEL_NAME = "qwen2.5-7b-instruct"  # Oppure: "llama-3.1-8b-instruct", "mistral-7b-instruct-v0.3"
+# Nota: usa il nome esatto che visualizzi in LM Studio
+HELPER_MODEL_NAME = "qwen/qwen2.5-vl-7b" 
 
 # Parametri di raccolta dati
 EPISODES_TO_COLLECT = 500  # Numero di episodi per scenario
@@ -49,9 +52,21 @@ OUTPUT_FILE = f"helper_responses_{SCENARIO}_{datetime.now().strftime('%Y%m%d_%H%
 # ================== FUNZIONI DI UTILITÀ ==================
 
 def setup_lmstudio():
-    """Configura la connessione a LM Studio."""
-    lms.get_default_client(SERVER_API_HOST)
-    print(f"Connected to LM Studio at {SERVER_API_HOST}")
+    """Configura la connessione a LM Studio (Verifica HTTP)."""
+    try:
+        # Check semplice (endpoint models standard OpenAI)
+        base_url = SERVER_API_HOST.replace("/chat/completions", "/models")
+        response = requests.get(base_url, timeout=5)
+        if response.status_code == 200:
+            print(f"Connected to LM Studio at {SERVER_API_HOST}")
+            return True
+        else:
+            print(f"Warning: LM Studio returned status {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"Error connecting to LM Studio: {e}")
+        print("Please ensure LM Studio server is running on port 1234.")
+        raise e
 
 
 def create_helper_prompt(game_state_description, plan_size=5):
@@ -137,10 +152,10 @@ def parse_action_plan(llm_response, valid_actions):
 
 def call_helper(client, game_state_description, plan_size=5):
     """
-    Chiama l'Helper LLM per ottenere un piano di azioni.
+    Chiama l'Helper LLM per ottenere un piano di azioni usando requests.
     
     Args:
-        client: Client LM Studio
+        client: (Ignorato, mantenuto per compatibilità firma)
         game_state_description: Descrizione dello stato
         plan_size: Numero di azioni da richiedere
         
@@ -150,16 +165,38 @@ def call_helper(client, game_state_description, plan_size=5):
     prompt = create_helper_prompt(game_state_description, plan_size)
     
     start_time = time.time()
+    response_text = ""
+    
+    payload = {
+        "model": HELPER_MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": "You are a helpful VizDoom assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 500,
+        "stream": False
+    }
+
     try:
-        model = client.llm.model(HELPER_MODEL_NAME)
-        response = model.respond(prompt)
-        response = str(response)
+        response = requests.post(
+            SERVER_API_HOST, 
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            response_text = data['choices'][0]['message']['content']
+        else:
+            print(f"Error from LM Studio: {response.status_code} - {response.text}")
+            
     except Exception as e:
         print(f"Error calling Helper: {e}")
-        response = ""
         
     elapsed = time.time() - start_time
-    return response, elapsed
+    return response_text, elapsed
 
 
 # ================== DATA COLLECTION ==================
@@ -298,153 +335,155 @@ def collect_helper_data(episodes=EPISODES_TO_COLLECT, scenario=SCENARIO,
     print(f"Statistics output: {stats_output_dir}\n")
     
     try:
-        with lms.Client() as client:
-            for episode in range(episodes):
-                state = env.reset()
-                done = False
-                episode_reward = 0
-                step = 0
-                helper_calls_this_episode = 0
-                episode_actions = []  # Traccia azioni per statistiche
-                helper_used_this_episode = False
-                
-                # Coda per le azioni suggerite dall'Helper
-                action_queue = deque()
-                
-                while not done:
-                    # Decidi se chiamare l'Helper
-                    should_call_helper = (
-                        len(action_queue) == 0 and 
-                        step % HELPER_CALL_FREQUENCY == 0 and
-                        helper_calls_this_episode < HELPER_CALLS_PER_EPISODE
-                    )
-                    
-                    if should_call_helper:
-                        # Ottieni descrizione stato
-                        game_state_desc = env.describe_game_state()
-                        
-                        # Chiama Helper
-                        helper_response, response_time = call_helper(
-                            client, game_state_desc, PLAN_SIZE
-                        )
-                        
-                        helper_calls += 1
-                        helper_calls_this_episode += 1
-                        helper_used_this_episode = True
-                        
-                        # Parsa azioni
-                        parsed_actions = parse_action_plan(
-                            helper_response, 
-                            env.action_names
-                        )
-                        
-                        # Verifica validità
-                        valid_actions = env.get_valid_actions()
-                        was_valid = len(parsed_actions) > 0
-                        
-                        # Calcola action score per ogni azione suggerita
-                        action_scores = []
-                        for action_name in parsed_actions:
-                            score = get_action_score(game_state_desc, action_name, scenario)
-                            action_scores.append(score)
-                        
-                        # Registra nelle statistiche
-                        avg_action_score = np.mean(action_scores) if action_scores else 0.0
-                        training_stats.record_action_score(avg_action_score)
-                        training_stats.record_helper_response(
-                            was_valid=was_valid,
-                            response_time=response_time
-                        )
-                        
-                        # Check per allucinazione (azioni non valide)
-                        if not was_valid or len(parsed_actions) < PLAN_SIZE:
-                            training_stats.record_hallucination()
-                        
-                        if was_valid:
-                            valid_responses += 1
-                            # Aggiungi azioni alla coda
-                            for action_name in parsed_actions:
-                                action_idx = env.get_action_from_name(action_name)
-                                if action_idx is not None and action_idx in valid_actions:
-                                    action_queue.append((action_name, action_idx))
-                        
-                        # Log interazione (reward sarà aggiornato dopo)
-                        collector.log_interaction(
-                            episode=episode,
-                            step=step,
-                            game_state=game_state_desc,
-                            helper_response=helper_response,
-                            parsed_actions=parsed_actions,
-                            actions_executed=[],  # Sarà aggiornato
-                            rewards_obtained=[],  # Sarà aggiornato
-                            was_valid=was_valid,
-                            response_time=response_time
-                        )
-                        
-                        if episode % 50 == 0:
-                            print(f"Episode {episode}, Step {step}: Helper called")
-                            print(f"  Parsed actions: {parsed_actions}")
-                    
-                    # Seleziona azione
-                    if len(action_queue) > 0:
-                        action_name, action = action_queue.popleft()
-                        action_source = "helper"
-                    else:
-                        # Usa policy DQN
-                        valid_actions = env.get_valid_actions()
-                        action = agent.act(state, valid_actions)
-                        action_name = env.action_names[action] if action < len(env.action_names) else "UNKNOWN"
-                        action_source = "dqn"
-                    
-                    # Traccia azione per statistiche
-                    episode_actions.append(action_name)
-                    training_stats.record_action(action_name)
-                    
-                    # Esegui azione
-                    next_state, reward, done, info = env.step(action)
-                    episode_reward += reward
-                    
-                    # Salva transizione per training DQN
-                    agent.remember(state, action, reward, next_state, done)
-                    
-                    # Training step
-                    if len(agent.memory) > agent.batch_size:
-                        agent.replay()
-                    
-                    state = next_state
-                    step += 1
-                
-                # Fine episodio
-                agent.decay_epsilon()
-                total_rewards.append(episode_reward)
-                episode_lengths.append(step)
-                
-                # Registra statistiche episodio
-                victory = info.get('victory', False)
-                training_stats.record_episode(
-                    episode=episode,
-                    reward=episode_reward,
-                    length=step,
-                    epsilon=agent.epsilon,
-                    win=victory,
-                    helper_used=helper_used_this_episode,
-                    loss=agent.last_loss if hasattr(agent, 'last_loss') else None
+        # Client non necessario con requests, usiamo un placeholder
+        client = None
+
+        for episode in range(episodes):
+            state = env.reset()
+            done = False
+            episode_reward = 0
+            step = 0
+            helper_calls_this_episode = 0
+            episode_actions = []  # Traccia azioni per statistiche
+            helper_used_this_episode = False
+            
+            # Coda per le azioni suggerite dall'Helper
+            action_queue = deque()
+            
+            while not done:
+                # Decidi se chiamare l'Helper
+                should_call_helper = (
+                    len(action_queue) == 0 and 
+                    step % HELPER_CALL_FREQUENCY == 0 and
+                    helper_calls_this_episode < HELPER_CALLS_PER_EPISODE
                 )
                 
-                # Aggiorna ultimo log con outcome
-                if collector.data:
-                    collector.data[-1]['episode_outcome'] = 'victory' if victory else 'defeat'
+                if should_call_helper:
+                    # Ottieni descrizione stato
+                    game_state_desc = env.describe_game_state()
+                    
+                    # Chiama Helper
+                    helper_response, response_time = call_helper(
+                        client, game_state_desc, PLAN_SIZE
+                    )
+                    
+                    helper_calls += 1
+                    helper_calls_this_episode += 1
+                    helper_used_this_episode = True
+                    
+                    # Parsa azioni
+                    parsed_actions = parse_action_plan(
+                        helper_response, 
+                        env.action_names
+                    )
+                    
+                    # Verifica validità
+                    valid_actions = env.get_valid_actions()
+                    was_valid = len(parsed_actions) > 0
+                    
+                    # Calcola action score per ogni azione suggerita
+                    action_scores = []
+                    for action_name in parsed_actions:
+                        score = get_action_score(game_state_desc, action_name, scenario)
+                        action_scores.append(score)
+                    
+                    # Registra nelle statistiche
+                    avg_action_score = np.mean(action_scores) if action_scores else 0.0
+                    training_stats.record_action_score(avg_action_score)
+                    training_stats.record_helper_response(
+                        was_valid=was_valid,
+                        response_time=response_time
+                    )
+                    
+                    # Check per allucinazione (azioni non valide)
+                    if not was_valid or len(parsed_actions) < PLAN_SIZE:
+                        training_stats.record_hallucination()
+                    
+                    if was_valid:
+                        valid_responses += 1
+                        # Aggiungi azioni alla coda
+                        for action_name in parsed_actions:
+                            action_idx = env.get_action_from_name(action_name)
+                            if action_idx is not None and action_idx in valid_actions:
+                                action_queue.append((action_name, action_idx))
+                    
+                    # Log interazione (reward sarà aggiornato dopo)
+                    collector.log_interaction(
+                        episode=episode,
+                        step=step,
+                        game_state=game_state_desc,
+                        helper_response=helper_response,
+                        parsed_actions=parsed_actions,
+                        actions_executed=[],  # Sarà aggiornato
+                        rewards_obtained=[],  # Sarà aggiornato
+                        was_valid=was_valid,
+                        response_time=response_time
+                    )
+                    
+                    if episode % 50 == 0:
+                        print(f"Episode {episode}, Step {step}: Helper called")
+                        print(f"  Parsed actions: {parsed_actions}")
                 
-                # Progress
-                if (episode + 1) % 10 == 0:
-                    avg_reward = np.mean(total_rewards[-100:])
-                    avg_length = np.mean(episode_lengths[-100:])
-                    valid_rate = valid_responses / max(helper_calls, 1) * 100
-                    print(f"Episode {episode + 1}/{episodes} | "
-                          f"Avg Reward: {avg_reward:.2f} | "
-                          f"Avg Length: {avg_length:.1f} | "
-                          f"Helper Calls: {helper_calls} | "
-                          f"Valid Rate: {valid_rate:.1f}%")
+                # Seleziona azione
+                if len(action_queue) > 0:
+                    action_name, action = action_queue.popleft()
+                    action_source = "helper"
+                else:
+                    # Usa policy DQN
+                    valid_actions = env.get_valid_actions()
+                    action = agent.act(state, valid_actions)
+                    action_name = env.action_names[action] if action < len(env.action_names) else "UNKNOWN"
+                    action_source = "dqn"
+                
+                # Traccia azione per statistiche
+                episode_actions.append(action_name)
+                training_stats.record_action(action_name)
+                
+                # Esegui azione
+                next_state, reward, done, info = env.step(action)
+                episode_reward += reward
+                
+                # Salva transizione per training DQN
+                agent.remember(state, action, reward, next_state, done)
+                
+                # Training step
+                if len(agent.memory) > agent.batch_size:
+                    agent.replay()
+                
+                state = next_state
+                step += 1
+            
+            # Fine episodio
+            agent.decay_epsilon()
+            total_rewards.append(episode_reward)
+            episode_lengths.append(step)
+            
+            # Registra statistiche episodio
+            victory = info.get('victory', False)
+            training_stats.record_episode(
+                episode=episode,
+                reward=episode_reward,
+                length=step,
+                epsilon=agent.epsilon,
+                win=victory,
+                helper_used=helper_used_this_episode,
+                loss=agent.last_loss if hasattr(agent, 'last_loss') else None
+            )
+            
+            # Aggiorna ultimo log con outcome
+            if collector.data:
+                collector.data[-1]['episode_outcome'] = 'victory' if victory else 'defeat'
+            
+            # Progress
+            if (episode + 1) % 10 == 0:
+                avg_reward = np.mean(total_rewards[-100:])
+                avg_length = np.mean(episode_lengths[-100:])
+                valid_rate = valid_responses / max(helper_calls, 1) * 100
+                print(f"Episode {episode + 1}/{episodes} | "
+                        f"Avg Reward: {avg_reward:.2f} | "
+                        f"Avg Length: {avg_length:.1f} | "
+                        f"Helper Calls: {helper_calls} | "
+                        f"Valid Rate: {valid_rate:.1f}%")
                           
     except KeyboardInterrupt:
         print("\nData collection interrupted by user.")

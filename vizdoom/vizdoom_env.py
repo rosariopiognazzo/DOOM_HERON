@@ -70,11 +70,12 @@ class VizDoomEnv:
             self.game.set_doom_scenario_path(f"doom_files/{self.scenario['wad']}")
         
         # Configura il rendering
-        self.game.set_window_visible(visible)
-        self.game.set_mode(Mode.PLAYER)
+        self.game.set_window_visible(False)
+        self.game.set_mode(Mode.ASYNC_PLAYER)
         self.game.set_screen_format(ScreenFormat.RGB24)
         self.game.set_screen_resolution(ScreenResolution.RES_640X480)
-        
+        self.sleep_time = 0.028
+
         # Definisci le azioni disponibili (one-hot encoding)
         self.action_names = self.scenario['actions']
         self.action_size = len(self.action_names)
@@ -106,7 +107,7 @@ class VizDoomEnv:
         Preprocessa un singolo frame: resize, grayscale, normalizzazione.
         
         Args:
-            frame: Frame RGB dal gioco (H, W, C)
+            frame: Frame RGB dal gioco (H, W, C) o (C, H, W)
             
         Returns:
             Frame preprocessato (frame_size[0], frame_size[1])
@@ -114,11 +115,39 @@ class VizDoomEnv:
         if frame is None:
             return np.zeros(self.frame_size, dtype=np.float32)
         
+        # Debug: stampa shape del frame (rimuovere dopo debug)
+        # print(f"DEBUG: frame.shape = {frame.shape}")
+        
         # Converti a grayscale
         if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        else:
+            # VizDoom può restituire (Channel, Height, Width) o (Height, Width, Channel)
+            # Controlliamo quale dimensione è quella dei canali (tipicamente 3 o 4)
+            
+            # Se la prima dimensione è piccola (3 o 4), è Channel-First
+            if frame.shape[0] in [3, 4]:
+                frame = np.transpose(frame, (1, 2, 0))
+            # Se l'ultima dimensione è grande (es. 480, 640), è ancora Channel-First
+            elif frame.shape[2] > 4:
+                frame = np.transpose(frame, (1, 2, 0))
+            
+            # Assicurati che l'array sia C-contiguous per OpenCV
+            if not frame.flags['C_CONTIGUOUS']:
+                frame = np.ascontiguousarray(frame, dtype=frame.dtype)
+
+            # Ora frame dovrebbe essere (H, W, C) con C in {3, 4}
+            if frame.shape[2] == 3:
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            elif frame.shape[2] == 4:
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGBA2GRAY)
+            else:
+                # Fallback: prendi solo il primo canale
+                gray = frame[:, :, 0]
+        elif len(frame.shape) == 2:
+            # Già grayscale
             gray = frame
+        else:
+            # Fallback per shape inattese
+            gray = np.zeros(self.frame_size, dtype=np.float32)
             
         # Crop della regione di interesse (rimuovi HUD se necessario)
         # Per deadly_corridor: crop verticale per rimuovere bordi

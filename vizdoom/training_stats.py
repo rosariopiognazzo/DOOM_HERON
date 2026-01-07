@@ -519,17 +519,26 @@ class TrainingStats:
         
     def save_raw_data(self):
         """Salva i dati grezzi per analisi successive."""
-        # Episode data
+        # Determina la lunghezza comune (numero di episodi)
+        num_episodes = len(self.episode_rewards)
+        
+        # Funzione per allineare lunghezze degli array
+        def pad_to_length(arr, target_len, fill_value=None):
+            if len(arr) < target_len:
+                return list(arr) + [fill_value] * (target_len - len(arr))
+            return list(arr)[:target_len]
+        
+        # Episode data con padding
         episode_data = pd.DataFrame({
-            'episode': range(1, len(self.episode_rewards) + 1),
-            'reward': self.episode_rewards,
-            'length': self.episode_lengths,
-            'victory': self.episode_outcomes,
-            'epsilon': self.epsilon_values,
-            'loss': self.losses,
-            'helper_calls': self.helper_calls_per_episode,
-            'valid_responses': self.helper_valid_responses,
-            'hallucinations': self.helper_hallucinations
+            'episode': range(1, num_episodes + 1),
+            'reward': pad_to_length(self.episode_rewards, num_episodes, 0),
+            'length': pad_to_length(self.episode_lengths, num_episodes, 0),
+            'victory': pad_to_length(self.episode_outcomes, num_episodes, False),
+            'epsilon': pad_to_length(self.epsilon_values, num_episodes, 0.0),
+            'loss': pad_to_length(self.losses, num_episodes, None),
+            'helper_calls': pad_to_length(self.helper_calls_per_episode, num_episodes, 0),
+            'valid_responses': pad_to_length(self.helper_valid_responses, num_episodes, 0),
+            'hallucinations': pad_to_length(self.helper_hallucinations, num_episodes, 0)
         })
         episode_data.to_csv(os.path.join(self.results_path, 'episode_data.csv'), index=False)
         
@@ -588,7 +597,7 @@ class TrainingVisualizer:
             training_stats: Istanza di TrainingStats
         """
         self.stats = training_stats
-    
+    '''
     def generate_all_plots(self, show=False):
         """Genera tutti i grafici disponibili."""
         self.stats.generate_all_plots(show=show)
@@ -616,6 +625,7 @@ class TrainingVisualizer:
     def plot_learning_curve(self, show=False):
         """Grafico della learning curve."""
         self.stats.plot_learning_curve(save=True, show=show)
+    '''
 
 
 # Test
